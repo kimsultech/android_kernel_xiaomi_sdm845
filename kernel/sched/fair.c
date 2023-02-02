@@ -9046,6 +9046,7 @@ static void update_cpu_capacity(struct sched_domain *sd, int cpu)
 		raw_spin_unlock_irqrestore(&mcc->lock, flags);
 		printk_deferred(KERN_INFO "CPU%d: update max cpu_capacity %lu\n",
 				cpu, capacity);
+        dump_stack();
 		goto skip_unlock;
 #endif
 	}

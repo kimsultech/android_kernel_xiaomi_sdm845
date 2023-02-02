@@ -63,9 +63,9 @@
 
 #define LIMITS_FREQ_CAP             0x46434150
 
-#define LIMITS_TEMP_DEFAULT         75000
-#define LIMITS_TEMP_HIGH_THRESH_MAX 120000
-#define LIMITS_LOW_THRESHOLD_OFFSET 500
+#define LIMITS_TEMP_DEFAULT         25000
+#define LIMITS_TEMP_HIGH_THRESH_MAX 160000
+#define LIMITS_LOW_THRESHOLD_OFFSET 3000
 #define LIMITS_POLLING_DELAY_MS     10
 #define LIMITS_CLUSTER_0_REQ        0x17D43704
 #define LIMITS_CLUSTER_1_REQ        0x17D45F04
@@ -157,9 +157,9 @@ static unsigned long limits_mitigation_notify(struct limits_dcvs_hw *hw)
 		goto notify_exit;
 	}
 
-	pr_debug("CPU:%d max value read:%lu\n",
-			cpumask_first(&hw->core_map),
-			max_limit);
+	//pr_info("CPU:%d max value read:%lu\n",
+	//		cpumask_first(&hw->core_map),
+	//		max_limit);
 	freq_val = FREQ_KHZ_TO_HZ(max_limit);
 	rcu_read_lock();
 	opp_entry = dev_pm_opp_find_freq_floor(cpu_dev, &freq_val);
@@ -182,13 +182,13 @@ static unsigned long limits_mitigation_notify(struct limits_dcvs_hw *hw)
 
 	get_online_cpus();
 	for_each_online_cpu(i) {
-		pr_debug("Updating policy for cpu%d\n", i);
+		//pr_debug("Updating policy for cpu%d\n", i);
 		cpufreq_update_policy(i);
 	}
 	put_online_cpus();
 
-	pr_debug("CPU:%d max limit:%lu\n", cpumask_first(&hw->core_map),
-			max_limit);
+	//pr_info("CPU:%d max limit:%lu\n", cpumask_first(&hw->core_map),
+	//		max_limit);
 	trace_lmh_dcvs_freq(cpumask_first(&hw->core_map), max_limit);
 
 notify_exit:
@@ -296,6 +296,9 @@ static int lmh_set_trips(void *data, int low, int high)
 	struct limits_dcvs_hw *hw = (struct limits_dcvs_hw *)data;
 	int ret = 0;
 
+    if( low == INT_MIN ) low = high - 3000;
+    if( high == INT_MAX ) high = low + 3000;
+
 	if (high >= LIMITS_TEMP_HIGH_THRESH_MAX || low < 0) {
 		pr_err("Value out of range low:%d high:%d\n",
 				low, high);
@@ -306,23 +309,30 @@ static int lmh_set_trips(void *data, int low, int high)
 	if (low >= high)
 		return -EINVAL;
 
+    pr_info("LIMITS_TRIP_HI:%d, LIMITS_TRIP_ARM:%d", high, low);
 	hw->temp_limits[LIMITS_TRIP_HI] = (uint32_t)high;
 	hw->temp_limits[LIMITS_TRIP_ARM] = (uint32_t)low;
 
 	ret =  limits_dcvs_write(hw->affinity, LIMITS_SUB_FN_THERMAL,
 				  LIMITS_ARM_THRESHOLD, low, 0, 0);
-	if (ret)
+	if (ret) {
+		pr_err("Error arm temp %d (low:%d high:%d)\n", ret, low, high);
 		return ret;
+    }
 	ret =  limits_dcvs_write(hw->affinity, LIMITS_SUB_FN_THERMAL,
 				  LIMITS_HI_THRESHOLD, high, 0, 0);
-	if (ret)
+	if (ret) {
+		pr_err("Error hi temp %d (low:%d high:%d)\n", ret, low, high);
 		return ret;
+    }
 	ret =  limits_dcvs_write(hw->affinity, LIMITS_SUB_FN_THERMAL,
 				  LIMITS_LOW_THRESHOLD,
 				  high - LIMITS_LOW_THRESHOLD_OFFSET,
 				  0, 0);
-	if (ret)
+	if (ret) {
+		pr_err("Error threshold temp %d (low:%d high:%d)\n", ret, low, high);
 		return ret;
+    }
 
 	return ret;
 }
@@ -371,6 +381,8 @@ static int lmh_set_max_limit(int cpu, u32 freq)
 	int ret = 0, cpu_idx, idx = 0;
 	u32 max_freq = U32_MAX;
 
+    dump_stack();
+
 	if (!hw)
 		return -EINVAL;
 
@@ -391,7 +403,7 @@ static int lmh_set_max_limit(int cpu, u32 freq)
 	ret = limits_dcvs_write(hw->affinity, LIMITS_SUB_FN_THERMAL,
 				  LIMITS_FREQ_CAP, max_freq,
 				  (max_freq == U32_MAX) ? 0 : 1, 1);
-	lmh_dcvs_notify(hw);
+	//lmh_dcvs_notify(hw);
 	mutex_unlock(&hw->access_lock);
 
 	return ret;
@@ -533,7 +545,7 @@ static int thermal_adjust_notify(struct notifier_block *nb, unsigned long val,
 	case CPUFREQ_ADJUST:
 		if (!hw)
 			break;
-
+        
 		pr_debug("CPU%u policy max before thermal adjust: %u kHz\n",
 			 cpu, policy->max);
 		pr_debug("CPU%u boost max: %lu kHz\n", cpu, hw->hw_freq_limit);
@@ -542,6 +554,7 @@ static int thermal_adjust_notify(struct notifier_block *nb, unsigned long val,
 
 		pr_debug("CPU%u policy max after boost: %u kHz\n",
 			 cpu, policy->max);
+        
 		break;
 	}
 
