@@ -1999,7 +1999,7 @@ int smblib_get_prop_input_suspend(struct smb_charger *chg,
 		= (get_client_vote(chg->usb_icl_votable, USER_VOTER) == 0)
 		 || get_client_vote(chg->dc_suspend_votable, USER_VOTER);*/
 
-	val->intval	= (get_client_vote(chg->chg_disable_votable, BYPASS_VOTER) == 0);
+	val->intval	= (get_client_vote(chg->chg_disable_votable, BYPASS_VOTER) == 1);
 
 	return 0;
 }
@@ -2470,6 +2470,10 @@ int smblib_set_prop_dc_temp_level(struct smb_charger *chg,
 	if (chg->dc_temp_level == chg->dc_thermal_levels)
 		return vote(chg->chg_disable_votable,
 			THERMAL_DAEMON_VOTER, true, 0);
+
+    if( get_client_vote(chg->chg_disable_votable, BYPASS_VOTER) == 1 ) {
+        return vote(chg->chg_disable_votable, THERMAL_DAEMON_VOTER, true, 0);
+    } 
 
 	vote(chg->chg_disable_votable, THERMAL_DAEMON_VOTER, false, 0);
 	if (chg->dc_temp_level == 0)
