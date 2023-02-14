@@ -381,8 +381,6 @@ static int lmh_set_max_limit(int cpu, u32 freq)
 	int ret = 0, cpu_idx, idx = 0;
 	u32 max_freq = U32_MAX;
 
-    dump_stack();
-
 	if (!hw)
 		return -EINVAL;
 
