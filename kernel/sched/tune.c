@@ -1,6 +1,7 @@
 #include <linux/cgroup.h>
 #include <linux/err.h>
 #include <linux/percpu.h>
+#include <linux/moduleparam.h>
 #include <linux/printk.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
@@ -8,8 +9,32 @@
 #include <linux/slab.h>
 #include <trace/events/sched.h>
 
+
 #include "sched.h"
 #include "tune.h"
+
+#ifdef MODULE_PARAM_PREFIX
+#undef MODULE_PARAM_PREFIX
+#endif
+#define MODULE_PARAM_PREFIX "sched."
+
+bool enable_boost_all = true;
+module_param(enable_boost_all, bool, 0664);
+
+bool enable_boost_low_prio = true;
+module_param(enable_boost_low_prio, bool, 0664);
+
+bool enable_boost_freq = true;
+module_param(enable_boost_freq, bool, 0664);
+
+int boost_default_value = 1;
+module_param(boost_default_value, int, 0664);
+
+int boost_override_silver = -1;
+module_param(boost_override_silver, int, 0664);
+
+int boost_override_gold = -1;
+module_param(boost_override_gold, int, 0664);
 
 unsigned int sysctl_sched_cfs_boost __read_mostly;
 
@@ -752,7 +777,16 @@ int schedtune_cpu_boost(int cpu)
 {
 	struct boost_groups *bg;
 
+	if (!unlikely(schedtune_initialized))
+		return 0;
+
 	bg = &per_cpu(cpu_boost_groups, cpu);
+
+    if( bg->boost_max > 0 ) {
+        if( cpu < 4 &&  boost_override_silver > -1 ) return boost_override_silver;
+        if( cpu > 3 &&  boost_override_gold > -1 ) return boost_override_gold;
+    }
+
 	return bg->boost_max;
 }
 
@@ -760,6 +794,7 @@ int schedtune_task_boost(struct task_struct *p)
 {
 	struct schedtune *st;
 	int task_boost;
+    int adj = p->signal->oom_score_adj;
 
 	if (!unlikely(schedtune_initialized))
 		return 0;
@@ -770,6 +805,11 @@ int schedtune_task_boost(struct task_struct *p)
 	task_boost = st->boost;
 	rcu_read_unlock();
 
+    if( task_boost > 0 ) {
+        if( likely(!enable_boost_all) && adj != 0 && adj != -100 ) return boost_default_value;
+        if( likely(!enable_boost_low_prio) && p->prio > DEFAULT_PRIO ) return 0;
+    }
+
 	return task_boost;
 }
 
@@ -777,9 +817,13 @@ int schedtune_prefer_idle(struct task_struct *p)
 {
 	struct schedtune *st;
 	int prefer_idle;
+    int adj = p->signal->oom_score_adj;
 
 	if (!unlikely(schedtune_initialized))
 		return 0;
+
+    if( likely(!enable_boost_all) && adj != 0 && adj != -100 ) return 0;
+    if( likely(!enable_boost_low_prio) && p->prio > DEFAULT_PRIO ) return 0;
 
 	/* Get prefer_idle value */
 	rcu_read_lock();
