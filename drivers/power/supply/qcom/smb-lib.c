@@ -2460,6 +2460,7 @@ int smblib_set_prop_dc_temp_level(struct smb_charger *chg,
 	union power_supply_propval dc_present;
 	union power_supply_propval batt_temp;
 	int rc;
+    int system_temp_level;
 
 	rc = smblib_get_prop_dc_present(chg, &dc_present);
 	if (rc < 0) {
@@ -2494,7 +2495,7 @@ int smblib_set_prop_dc_temp_level(struct smb_charger *chg,
         return vote(chg->chg_disable_votable, THERMAL_DAEMON_VOTER, true, 0);
     } 
 
-    int system_temp_level = chg->dc_temp_level;
+    system_temp_level = chg->dc_temp_level;
 
     if( static_limited_current ) {
         system_temp_level = chg->dc_temp_level-2;
