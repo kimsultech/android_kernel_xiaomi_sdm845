@@ -515,7 +515,7 @@ static void get_fcc_stepper_params(struct pl_data *chip, int main_fcc_ua,
 #define MINIMUM_PARALLEL_FCC_UA		500000
 #define PL_TAPER_WORK_DELAY_MS		500
 #define TAPER_RESIDUAL_PCT		90
-#define TAPER_REDUCTION_UA		200000
+#define TAPER_REDUCTION_UA		100000
 static void pl_taper_work(struct work_struct *work)
 {
 	struct pl_data *chip = container_of(work, struct pl_data,
