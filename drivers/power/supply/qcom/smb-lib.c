@@ -45,6 +45,8 @@ static int static_limited_current = 0;
 static bool off_charge_flag;
 static void smblib_wireless_set_enable(struct smb_charger *chg, int enable);
 
+static void _update_system_thermal_level(struct smb_charger *chg);
+
 static bool is_secure(struct smb_charger *chg, int addr)
 {
 	if (addr == SHIP_MODE_REG || addr == FREQ_CLK_DIV_REG)
@@ -2454,13 +2456,89 @@ int smblib_set_prop_batt_status(struct smb_charger *chg,
 	return 0;
 }
 
+static int baikalos_override_thermal_level(struct smb_charger *chg, int val) {
+        int rc, pval, batt_temp, sconfig;
+        union power_supply_propval rval;
+        
+                               // 29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46
+        int level_default[] =   {  0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 5, 6,10,13,15,15 };
+        int level_high[] =      {  3, 3, 3, 4, 5, 6, 6, 7, 7,11,11,13,14,15,15,15,15,15 };
+        int level_nolimits[] =  {  0, 0, 0, 0, 0, 0, 0, 2, 2, 9, 9,12,13,14,15,15,15,15 };
+        int level_cool[] =      {  0, 0, 0, 5, 5, 8, 8,10,10,12,12,13,13,14,14,14,15,15 };
+        int level_cold[] =      { 10,10,10,10,10,10,10,11,11,12,13,14,15,15,15,15,15,15 };
+        int level_phone[] =     { 12,12,12,12,12,12,12,12,12,12,14,14,15,15,15,15,15,15 };
+        int level_gaming[] =    {  8, 8, 8, 8, 8, 8, 8,11,11,12,12,13,14,15,15,15,15,15 };
+        int level_gaming2[] =   {  8, 8, 8, 8, 8, 8, 8,11,11,12,12,13,14,15,15,15,15,15 };
+        int level_camera[] =    {  8, 8, 8, 8, 8, 8, 8,11,11,12,12,13,14,15,15,15,15,15 };
+        int level_vr[] =        {  8, 8, 8, 8, 8, 8, 8,11,11,12,12,13,14,15,15,15,15,15 };
+
+        pval = val;
+
+
+    	rc = smblib_get_prop_from_bms(chg,
+				POWER_SUPPLY_PROP_TEMP, &rval);
+
+        if( rc < 0 ) return val;
+
+        batt_temp = rval.intval/10;
+
+        sconfig = get_sconfig();
+
+        pr_info("thermal batt_temp: %d", batt_temp);
+
+        batt_temp -=  29;
+
+        if( batt_temp < 0 ) { 
+            batt_temp = 0;
+        }
+        if( batt_temp > 17 ) {
+            batt_temp = 17;
+        }
+
+        switch(sconfig) {
+            case 1:
+                pr_info("thermal level_high: %d", level_high[batt_temp]);
+                return level_high[batt_temp];
+            case 2:
+                pr_info("thermal level_nolimits: %d", level_nolimits[batt_temp]);
+                return level_nolimits[batt_temp];
+            case 3:
+                pr_info("thermal level_cool: %d", level_cool[batt_temp]);
+                return level_cool[batt_temp];
+            case 4:
+                pr_info("thermal level_cold: %d", level_cold[batt_temp]);
+                return level_cold[batt_temp];
+            case 5:
+                pr_info("thermal level_phone: %d", level_phone[batt_temp]);
+                return level_phone[batt_temp];
+            case 6:
+                pr_info("thermal level_gaming: %d", level_gaming[batt_temp]);
+                return level_gaming[batt_temp];
+            case 7:
+                pr_info("thermal level_gaming2: %d", level_gaming2[batt_temp]);
+                return level_gaming2[batt_temp];
+            case 8:
+                pr_info("thermal level_camera: %d", level_camera[batt_temp]);
+                return level_camera[batt_temp];
+            case 9:
+                pr_info("thermal level_vr: %d", level_vr[batt_temp]);
+                return level_vr[batt_temp];
+
+            default:
+                pr_info("thermal level_default: %d", level_default[batt_temp]);
+                return level_default[batt_temp];
+        }
+
+        return pval;
+}
+
 int smblib_set_prop_dc_temp_level(struct smb_charger *chg,
 				const union power_supply_propval *val)
 {
 	union power_supply_propval dc_present;
 	union power_supply_propval batt_temp;
 	int rc;
-    int system_temp_level;
+    int system_temp_level, dc_temp_level;
 
 	rc = smblib_get_prop_dc_present(chg, &dc_present);
 	if (rc < 0) {
@@ -2481,26 +2559,33 @@ int smblib_set_prop_dc_temp_level(struct smb_charger *chg,
 		return -EINVAL;
 	if (val->intval > chg->dc_thermal_levels)
 		return -EINVAL;
+
 	chg->dc_temp_level = val->intval;
 
 	if (!dc_present.intval)
 		return 0;
 
-	if (chg->dc_temp_level == chg->dc_thermal_levels)
+    dc_temp_level = baikalos_override_thermal_level(chg, chg->dc_temp_level);
+
+	if (dc_temp_level == chg->dc_thermal_levels) {
+        pr_info("%s overheat detected, charging disabled",__FUNCTION__);
 		return vote(chg->chg_disable_votable,
 			THERMAL_DAEMON_VOTER, true, 0);
+    }
 
     if( get_client_vote(chg->chg_disable_votable, BYPASS_VOTER) == 1 ) {
         pr_info("%s bypass charging enabled",__FUNCTION__);
         return vote(chg->chg_disable_votable, THERMAL_DAEMON_VOTER, true, 0);
     } 
 
-    system_temp_level = chg->dc_temp_level;
+    system_temp_level = dc_temp_level;
 
     if( static_limited_current ) {
         system_temp_level = chg->dc_temp_level-2;
         if( system_temp_level < 0 ) system_temp_level = 0;
         pr_info("%s limited charging enabled %d",__FUNCTION__, system_temp_level);
+    } else {
+        pr_info("%s dc thermal system temp level %d",__FUNCTION__, system_temp_level);
     }
 
 	vote(chg->chg_disable_votable, THERMAL_DAEMON_VOTER, false, 0);
@@ -2514,13 +2599,15 @@ int smblib_set_prop_dc_temp_level(struct smb_charger *chg,
 	return 0;
 }
 
+static int batt_temp = 0;
+static int prev_sconfig = -10;
 #define CHARGING_PERIOD_S 500
 #define NOT_CHARGING_PERIOD_S 1800
 static void smblib_reg_work(struct work_struct *work)
 {
 	struct smb_charger *chg = container_of(work, struct smb_charger,
 							reg_work.work);
-	int rc, usb_present;
+	int rc, usb_present, sconfig;
 	union power_supply_propval val;
 	int icl_settle, usb_cur_in, usb_vol_in;
 	int main_fcc, parallel_fcc, parallel_charging_enable;
@@ -2537,6 +2624,9 @@ static void smblib_reg_work(struct work_struct *work)
 	usb_present = val.intval;
 
 	if (usb_present) {
+
+		pr_info("reg_work %d\n", usb_present);
+
 		power_supply_get_property(chg->usb_psy,
 					POWER_SUPPLY_PROP_INPUT_CURRENT_NOW,
 					&val);
@@ -2589,12 +2679,30 @@ static void smblib_reg_work(struct work_struct *work)
 			parallel_charging_enable = !val.intval;
 		}
 
+
+    	smblib_get_prop_from_bms(chg,
+				POWER_SUPPLY_PROP_TEMP, &val);
+
+        if( batt_temp != val.intval ) {
+            batt_temp = val.intval;
+            _update_system_thermal_level(chg);
+        }
+
+        sconfig = get_sconfig();
+        if( sconfig != prev_sconfig ) {
+            prev_sconfig = sconfig;
+            _update_system_thermal_level(chg);
+        }
+
 		schedule_delayed_work(&chg->reg_work,
 			CHARGING_PERIOD_S * HZ);
 	} else
 		schedule_delayed_work(&chg->reg_work,
 			NOT_CHARGING_PERIOD_S * HZ);
 }
+
+
+
 #ifdef CONFIG_THERMAL
 #define MAX_TEMP_LEVEL		16
 /* percent of ICL compared to base 5V for different PD voltage_min voltage */
@@ -2612,62 +2720,84 @@ static void smblib_reg_work(struct work_struct *work)
 static int smblib_therm_charging(struct smb_charger *chg)
 {
 	int thermal_icl_ua = 0;
+    int system_temp_level = 0;
 	int rc;
 
-	if (chg->system_temp_level >= MAX_TEMP_LEVEL)
-		return 0;
+    system_temp_level = baikalos_override_thermal_level(chg, chg->system_temp_level);
+
+	if (system_temp_level >= MAX_TEMP_LEVEL) {
+        pr_info("%s overheat detected, charging disabled",__FUNCTION__);
+		return vote(chg->chg_disable_votable,
+			THERMAL_DAEMON_VOTER, true, 0);
+    }
+
+    if( get_client_vote(chg->chg_disable_votable, BYPASS_VOTER) == 1 ) {
+        pr_info("%s bypass charging enabled",__FUNCTION__);
+        return vote(chg->chg_disable_votable, THERMAL_DAEMON_VOTER, true, 0);
+    } 
+
+    if( static_limited_current ) {
+        if( system_temp_level < (MAX_TEMP_LEVEL-2) )system_temp_level = MAX_TEMP_LEVEL-2;
+        if( system_temp_level < 0 ) system_temp_level = 0;
+        pr_info("%s limited charging enabled %d",__FUNCTION__, system_temp_level);
+    } else {
+        pr_info("%s thermal system temp level %d",__FUNCTION__, system_temp_level);
+    }
 
 	switch (chg->usb_psy_desc.type) {
 	case POWER_SUPPLY_TYPE_USB_HVDCP:
-		thermal_icl_ua = chg->thermal_mitigation_qc2[chg->system_temp_level];
+		thermal_icl_ua = chg->thermal_mitigation_qc2[system_temp_level];
+        pr_info("%s usb icl thermal POWER_SUPPLY_TYPE_USB_HVDCP %d",__FUNCTION__, thermal_icl_ua);
 		break;
 	case POWER_SUPPLY_TYPE_USB_HVDCP_3:
 		thermal_icl_ua =
-			chg->thermal_mitigation_qc3[chg->system_temp_level];
+			chg->thermal_mitigation_qc3[system_temp_level];
+        pr_info("%s usb icl thermal POWER_SUPPLY_TYPE_USB_HVDCP_3 %d",__FUNCTION__, thermal_icl_ua);
 		break;
 	case POWER_SUPPLY_TYPE_USB_PD:
 		if (chg->voltage_min_uv >= PD_MICRO_5V
 				&& chg->voltage_min_uv < PD_MICRO_5P9V)
-			thermal_icl_ua = chg->thermal_mitigation_pd_base[chg->system_temp_level];
+			thermal_icl_ua = chg->thermal_mitigation_pd_base[system_temp_level];
 		else if (chg->voltage_min_uv >= PD_MICRO_5P9V
 					&& chg->voltage_min_uv < PD_MICRO_6P5V)
-			thermal_icl_ua = chg->thermal_mitigation_pd_base[chg->system_temp_level]
+			thermal_icl_ua = chg->thermal_mitigation_pd_base[system_temp_level]
 					* PD_6P5V_PERCENT / 100;
 		else if (chg->voltage_min_uv >= PD_MICRO_6P5V
 					&& chg->voltage_min_uv < PD_MICRO_7P5V)
-			thermal_icl_ua = chg->thermal_mitigation_pd_base[chg->system_temp_level]
+			thermal_icl_ua = chg->thermal_mitigation_pd_base[system_temp_level]
 					* PD_7P5V_PERCENT / 100;
 		else if (chg->voltage_min_uv >= PD_MICRO_7P5V
 					&& chg->voltage_min_uv <= PD_MICRO_8P5V)
-			thermal_icl_ua = chg->thermal_mitigation_pd_base[chg->system_temp_level]
+			thermal_icl_ua = chg->thermal_mitigation_pd_base[system_temp_level]
 					* PD_8P5V_PERCENT / 100;
 		else if (chg->voltage_min_uv >= PD_MICRO_8P5V)
-			thermal_icl_ua = chg->thermal_mitigation_pd_base[chg->system_temp_level]
+			thermal_icl_ua = chg->thermal_mitigation_pd_base[system_temp_level]
 					* PD_9V_PERCENT / 100;
 		else
-			thermal_icl_ua = chg->thermal_mitigation_pd_base[chg->system_temp_level];
+			thermal_icl_ua = chg->thermal_mitigation_pd_base[system_temp_level];
+        pr_info("%s usb icl thermal POWER_SUPPLY_TYPE_USB_PD (%d) %d",__FUNCTION__, chg->voltage_min_uv, thermal_icl_ua);
 		break;
 	case POWER_SUPPLY_TYPE_USB_DCP:
 	default:
-		thermal_icl_ua = chg->thermal_mitigation_dcp[chg->system_temp_level];
+		thermal_icl_ua = chg->thermal_mitigation_dcp[system_temp_level];
+        pr_info("%s usb icl thermal default (%d) %d",__FUNCTION__, chg->usb_psy_desc.type, thermal_icl_ua);
 		break;
 	}
 
-	if (chg->system_temp_level == 0) {
-		/* if therm_lvl_sel is 0, clear thermal voter */
-		rc = vote(chg->usb_icl_votable, THERMAL_DAEMON_VOTER, false, 0);
-		if (rc < 0)
-			pr_err("Couldn't disable USB thermal ICL vote rc=%d\n",
-				rc);
-	} else {
-		pr_info("thermal_icl_ua is %d, chg->system_temp_level: %d\n",
-				thermal_icl_ua, chg->system_temp_level);
+	vote(chg->chg_disable_votable, THERMAL_DAEMON_VOTER, false, 0);
 
-		rc = vote(chg->usb_icl_votable, THERMAL_DAEMON_VOTER, true,
-					thermal_icl_ua);
-		if (rc < 0)
-			pr_err("Couldn't disable USB thermal ICL vote rc=%d\n",
-				rc);
+	if (system_temp_level == 0) {
+        pr_info("%s usb icl thermal system temp level %d",__FUNCTION__, 0);
+
+        vote(chg->usb_icl_votable, THERMAL_DAEMON_VOTER, false, 0);
+        vote(chg->fcc_votable, THERMAL_DAEMON_VOTER, false, 0);
+
+	} else {
+		pr_info("%s thermal_icl_ua is %d, system_temp_level: %d, baikal_temp_level: %d\n",__FUNCTION__,
+				thermal_icl_ua, chg->system_temp_level, system_temp_level);
+
+        //vote(chg->usb_icl_votable, THERMAL_DAEMON_VOTER, true, thermal_icl_ua);
+    	vote(chg->fcc_votable, THERMAL_DAEMON_VOTER, true, thermal_icl_ua);
 	}
 
 	return rc;
@@ -2718,6 +2848,17 @@ int smblib_set_prop_system_temp_level(struct smb_charger *chg,
 	return 0;
 }
 #endif
+
+
+static void _update_system_thermal_level(struct smb_charger *chg) {
+
+    union power_supply_propval prev_lvl;
+    prev_lvl.intval = chg->system_temp_level;
+
+    smblib_set_prop_system_temp_level(chg, &prev_lvl);
+}
+
+
 int smblib_set_prop_charge_qnovo_enable(struct smb_charger *chg,
 				  const union power_supply_propval *val)
 {
@@ -6746,3 +6887,4 @@ static int __init early_parse_off_charge_flag(char *p)
 	return 0;
 }
 early_param("androidboot.mode", early_parse_off_charge_flag);
+
