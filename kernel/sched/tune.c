@@ -18,13 +18,16 @@
 #endif
 #define MODULE_PARAM_PREFIX "sched."
 
-bool enable_boost_all = true;
+bool enable_boost_debug = false;
+module_param(enable_boost_debug, bool, 0664);
+
+bool enable_boost_all = false;
 module_param(enable_boost_all, bool, 0664);
 
-bool enable_boost_low_prio = true;
+bool enable_boost_low_prio = false;
 module_param(enable_boost_low_prio, bool, 0664);
 
-bool enable_boost_freq = true;
+bool enable_boost_freq = false;
 module_param(enable_boost_freq, bool, 0664);
 
 int boost_default_value = 1;
@@ -205,6 +208,8 @@ struct schedtune {
 
 	/* Boost value for tasks on that SchedTune CGroup */
 	int boost;
+    int silver_boost;
+    int gold_boost;
 
 #ifdef CONFIG_SCHED_WALT
 	/* Toggle ability to override sched boost enabled */
@@ -270,7 +275,9 @@ static inline struct schedtune *parent_st(struct schedtune *st)
  */
 static struct schedtune
 root_schedtune = {
-	.boost	= 0,
+	.boost = 0,
+    .silver_boost = 0,
+    .gold_boost = 0,
 #ifdef CONFIG_SCHED_WALT
 	.sched_boost_no_override = false,
 	.sched_boost_enabled = true,
@@ -344,11 +351,19 @@ static struct schedtune *allocated_group[BOOSTGROUPS_COUNT] = {
 struct boost_groups {
 	/* Maximum boost value for all RUNNABLE tasks on a CPU */
 	int boost_max;
+    int silver_boost_max;
+    int gold_boost_max;
+	
 	struct {
 		/* True when this boost group maps an actual cgroup */
 		bool valid;
 		/* The boost for tasks on that boost group */
 		int boost;
+
+        int silver_boost;
+
+        int gold_boost;
+
 		/* Count of RUNNABLE tasks on that boost group */
 		unsigned tasks;
 	} group[BOOSTGROUPS_COUNT];
@@ -429,13 +444,17 @@ static void
 schedtune_cpu_update(int cpu)
 {
 	struct boost_groups *bg;
-	int boost_max;
+	int boost_max,silver_boost_max,gold_boost_max;
+	
 	int idx;
 
 	bg = &per_cpu(cpu_boost_groups, cpu);
 
 	/* The root boost group is always active */
 	boost_max = bg->group[0].boost;
+	silver_boost_max = bg->group[0].silver_boost;
+	gold_boost_max = bg->group[0].gold_boost;
+	
 	for (idx = 1; idx < BOOSTGROUPS_COUNT; ++idx) {
 
 		/* Ignore non boostgroups not mapping a cgroup */
@@ -449,14 +468,33 @@ schedtune_cpu_update(int cpu)
 		if (bg->group[idx].tasks == 0)
 			continue;
 
-		boost_max = max(boost_max, bg->group[idx].boost);
+		/* This boost group is active */
+		if (boost_max <= bg->group[idx].boost) {
+    		boost_max = bg->group[idx].boost;
+    		
+        }
+
+		if (silver_boost_max <= bg->group[idx].silver_boost) {
+    		silver_boost_max = bg->group[idx].silver_boost;
+        }
+
+		if (gold_boost_max <= bg->group[idx].gold_boost) {
+    		gold_boost_max = bg->group[idx].gold_boost;
+        }
+
 	}
 
 	/* Ensures boost_max is non-negative when all cgroup boost values
 	 * are neagtive. Avoids under-accounting of cpu capacity which may cause
 	 * task stacking and frequency spikes.*/
 	boost_max = max(boost_max, 0);
+	silver_boost_max = max(silver_boost_max, 0);
+	gold_boost_max = max(gold_boost_max, 0);
+
 	bg->boost_max = boost_max;
+	bg->silver_boost_max = silver_boost_max;
+	bg->gold_boost_max = gold_boost_max;
+	
 }
 
 static int
@@ -500,6 +538,96 @@ schedtune_boostgroup_update(int idx, int boost)
 		}
 
 		trace_sched_tune_boostgroup_update(cpu, 0, bg->boost_max);
+	}
+
+	return 0;
+}
+
+
+static int
+schedtune_boostgroup_update_silver(int idx, int boost)
+{
+	struct boost_groups *bg;
+	int cur_boost_max;
+	int old_boost;
+	int cpu;
+
+	/* Update per CPU boost groups */
+	for_each_possible_cpu(cpu) {
+		bg = &per_cpu(cpu_boost_groups, cpu);
+
+		/*
+		 * Keep track of current boost values to compute the per CPU
+		 * maximum only when it has been affected by the new value of
+		 * the updated boost group
+		 */
+		cur_boost_max = bg->silver_boost_max;
+		old_boost = bg->group[idx].silver_boost;
+
+		/* Update the boost value of this boost group */
+		bg->group[idx].silver_boost = boost;
+
+		/* Check if this update increase current max */
+		
+		if (boost > cur_boost_max && bg->group[idx].tasks) {
+			bg->silver_boost_max = boost;
+
+			trace_sched_tune_boostgroup_update(cpu, 1, bg->silver_boost_max);
+			continue;
+		}
+
+		/* Check if this update has decreased current max */
+		if (cur_boost_max == old_boost && old_boost > boost) {
+			schedtune_cpu_update(cpu);
+			trace_sched_tune_boostgroup_update(cpu, -1, bg->silver_boost_max);
+			continue;
+		}
+
+		trace_sched_tune_boostgroup_update(cpu, 0, bg->silver_boost_max);
+	}
+
+	return 0;
+}
+
+static int
+schedtune_boostgroup_update_gold(int idx, int boost)
+{
+	struct boost_groups *bg;
+	int cur_boost_max;
+	int old_boost;
+	int cpu;
+
+	/* Update per CPU boost groups */
+	for_each_possible_cpu(cpu) {
+		bg = &per_cpu(cpu_boost_groups, cpu);
+
+		/*
+		 * Keep track of current boost values to compute the per CPU
+		 * maximum only when it has been affected by the new value of
+		 * the updated boost group
+		 */
+		cur_boost_max = bg->gold_boost_max;
+		old_boost = bg->group[idx].gold_boost;
+
+		/* Update the boost value of this boost group */
+		bg->group[idx].gold_boost = boost;
+
+		/* Check if this update increase current max */
+		if (boost > cur_boost_max && bg->group[idx].tasks) {
+			bg->gold_boost_max = boost;
+
+			trace_sched_tune_boostgroup_update(cpu, 1, bg->gold_boost_max);
+			continue;
+		}
+
+		/* Check if this update has decreased current max */
+		if (cur_boost_max == old_boost && old_boost > boost) {
+			schedtune_cpu_update(cpu);
+			trace_sched_tune_boostgroup_update(cpu, -1, bg->gold_boost_max);
+			continue;
+		}
+
+		trace_sched_tune_boostgroup_update(cpu, 0, bg->gold_boost_max);
 	}
 
 	return 0;
@@ -576,7 +704,7 @@ int schedtune_can_attach(struct cgroup_taskset *tset)
 	int dst_bg; /* Destination boost group index */
 	int tasks;
 
-	if (!unlikely(schedtune_initialized))
+	if (unlikely(!schedtune_initialized))
 		return 0;
 
 
@@ -780,14 +908,17 @@ int schedtune_cpu_boost(int cpu)
 	if (!unlikely(schedtune_initialized))
 		return 0;
 
-	bg = &per_cpu(cpu_boost_groups, cpu);
+    
 
-    if( bg->boost_max > 0 ) {
-        if( cpu < 4 &&  boost_override_silver > -1 ) return boost_override_silver;
-        if( cpu > 3 &&  boost_override_gold > -1 ) return boost_override_gold;
+	bg = &per_cpu(cpu_boost_groups, cpu);
+    if( cpu < 4 ) { 
+        if( unlikely(enable_boost_debug) && bg->silver_boost_max > 0 ) pr_info("schedtune_cpu_boost (%d):%d",cpu, bg->silver_boost_max);
+        return bg->silver_boost_max;
     }
 
-	return bg->boost_max;
+    if( unlikely(enable_boost_debug) && bg->gold_boost_max > 0 ) pr_info("schedtune_cpu_boost (%d):%d",cpu, bg->gold_boost_max);
+	return bg->gold_boost_max;
+
 }
 
 int schedtune_task_boost(struct task_struct *p)
@@ -799,6 +930,8 @@ int schedtune_task_boost(struct task_struct *p)
 	if (!unlikely(schedtune_initialized))
 		return 0;
 
+    if (p->flags & PF_KTHREAD) return 0;
+
 	/* Get task boost value */
 	rcu_read_lock();
 	st = task_schedtune(p);
@@ -806,8 +939,8 @@ int schedtune_task_boost(struct task_struct *p)
 	rcu_read_unlock();
 
     if( task_boost > 0 ) {
-        if( likely(!enable_boost_all) && adj != 0 && adj != -100 ) return boost_default_value;
-        if( likely(!enable_boost_low_prio) && p->prio > DEFAULT_PRIO ) return 0;
+        if( adj != 0 && adj != -100 ) return 1;
+        if( p->prio > DEFAULT_PRIO ) return 0;
     }
 
 	return task_boost;
@@ -822,8 +955,8 @@ int schedtune_prefer_idle(struct task_struct *p)
 	if (!unlikely(schedtune_initialized))
 		return 0;
 
-    if( likely(!enable_boost_all) && adj != 0 && adj != -100 ) return 0;
-    if( likely(!enable_boost_low_prio) && p->prio > DEFAULT_PRIO ) return 0;
+    if( /*likely(!enable_boost_all) &&*/ adj != 0 && adj != -100 ) return 0;
+    if( /*likely(!enable_boost_low_prio) &&*/ p->prio > DEFAULT_PRIO ) return 0;
 
 	/* Get prefer_idle value */
 	rcu_read_lock();
@@ -859,6 +992,23 @@ boost_read(struct cgroup_subsys_state *css, struct cftype *cft)
 
 	return st->boost;
 }
+
+static s64
+silver_boost_read(struct cgroup_subsys_state *css, struct cftype *cft)
+{
+	struct schedtune *st = css_st(css);
+
+	return st->silver_boost;
+}
+
+static s64
+gold_boost_read(struct cgroup_subsys_state *css, struct cftype *cft)
+{
+	struct schedtune *st = css_st(css);
+
+	return st->gold_boost;
+}
+
 
 #ifdef CONFIG_SCHED_WALT
 static void schedtune_attach(struct cgroup_taskset *tset)
@@ -915,7 +1065,39 @@ boost_write(struct cgroup_subsys_state *css, struct cftype *cft,
 	/* Update CPU boost */
 	schedtune_boostgroup_update(st->idx, st->boost);
 
-	trace_sched_tune_config(st->boost);
+	return 0;
+}
+
+static int
+silver_boost_write(struct cgroup_subsys_state *css, struct cftype *cft,
+	    s64 boost)
+{
+	struct schedtune *st = css_st(css);
+
+	if (boost < -100 || boost > 100)
+		return -EINVAL;
+
+	st->silver_boost = boost;
+
+	/* Update CPU boost */
+	schedtune_boostgroup_update_silver(st->idx, st->silver_boost);
+
+	return 0;
+}
+
+static int
+gold_boost_write(struct cgroup_subsys_state *css, struct cftype *cft,
+	    s64 boost)
+{
+	struct schedtune *st = css_st(css);
+
+	if (boost < -100 || boost > 100)
+		return -EINVAL;
+
+	st->gold_boost = boost;
+
+	/* Update CPU boost */
+	schedtune_boostgroup_update_gold(st->idx, st->gold_boost);
 
 	return 0;
 }
@@ -942,6 +1124,16 @@ static struct cftype files[] = {
 		.name = "boost",
 		.read_s64 = boost_read,
 		.write_s64 = boost_write,
+	},
+	{
+		.name = "silver_boost",
+		.read_s64 = silver_boost_read,
+		.write_s64 = silver_boost_write,
+	},
+	{
+		.name = "gold_boost",
+		.read_s64 = gold_boost_read,
+		.write_s64 = gold_boost_write,
 	},
 	{
 		.name = "prefer_idle",
